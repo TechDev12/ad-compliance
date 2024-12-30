@@ -508,7 +508,7 @@ $Report += @"
         </style>
 
    
-        <h1>Active Directory Security Report</h1>
+        <h1>Active Directory Users Report</h1>
         <h2>Password Policy:</h2>
         <p>Password complexity enabled: $PasswordComplexity</p>
         <h2>Last Logon Dates and Password Expiry:</h2>
