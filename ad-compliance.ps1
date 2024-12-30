@@ -589,7 +589,7 @@ $Report += @"
 "@
 
 # Output to HTML file
-$ReportPath = "C:\AD-Audit\Report.html"  # Specify your report path
+
 $Report | Out-File -FilePath $ReportPath -Encoding utf8
 
 
