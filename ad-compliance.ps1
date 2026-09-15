@@ -16,10 +16,16 @@ param (
 # Import required modules
 Import-Module ActiveDirectory
 Import-Module GroupPolicy
+Add-Type -AssemblyName System.Web
 
 # Suppress errors
 $ErrorActionPreference = "Stop"
 
+function ConvertTo-SafeHtml {
+    param([string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return "" }
+    return [System.Web.HttpUtility]::HtmlEncode($Text)
+}
 
 # Update with your values
 
@@ -28,28 +34,41 @@ $BaseDirectory = $PSScriptRoot
 $DomainController = $dchostname
 $LogoPath = Join-Path -Path $BaseDirectory -ChildPath "Logo.jpg"
 $ReportPath = Join-Path -Path $BaseDirectory -ChildPath "Report.html"
-$domain = $domain
+
+$SafeDomain = ConvertTo-SafeHtml $domain
+$SafeSignatureUrl = ConvertTo-SafeHtml $signature_url
+
+# Cache the default domain password policy once; reused by multiple benchmarks below
+$DefaultPasswordPolicy = Get-ADDefaultDomainPasswordPolicy -Server $DomainController
 
 # Domain stats
 $DomainName = (Get-ADDomain).DNSRoot
 $NumberOfUsers = (Get-ADUser -Filter *).Count
 $NumberOfGroups = (Get-ADGroup -Filter *).Count
 $NumberOfDisabledUsers = (Get-ADUser -Filter { Enabled -eq $false }).Count
-$NumberOfDomainAdmins = (Get-ADGroupMember -Identity "Domain Admins").Count
+try {
+    $NumberOfDomainAdmins = (Get-ADGroupMember -Identity "Domain Admins" -ErrorAction Stop).Count
+} catch {
+    Write-Warning "Failed to enumerate 'Domain Admins' group: $_"
+    $NumberOfDomainAdmins = "N/A"
+}
 
 # Define the CIS benchmarks to check
 $CISBenchmarks = @(
-    @{ Name = "Ensure 'Account lockout duration' is set to '15 or more minute(s)'"; Command = { (Get-ADDefaultDomainPasswordPolicy -Server $DomainController).LockoutDuration.TotalMinutes -ge 15 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/account-lockout-duration"; Type = "CIS" },
-    @{ Name = "Ensure 'Account lockout threshold' is set to '10 or fewer invalid logon attempt(s)'"; Command = { (Get-ADDefaultDomainPasswordPolicy -Server $DomainController).LockoutThreshold -le 10 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/account-lockout-threshold"; Type = "CIS" },
-    @{ Name = "Ensure 'Password minimum length' is set to '14 or more character(s)'"; Command = { (Get-ADDefaultDomainPasswordPolicy -Server $DomainController).MinPasswordLength -ge 14 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/password-minimum-length"; Type = "CIS" },
-    @{ Name = "Ensure 'Password history size' is set to '24 or more password(s)'"; Command = { (Get-ADDefaultDomainPasswordPolicy -Server $DomainController).PasswordHistorySize -ge 24 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/enforce-password-history"; Type = "CIS" },
-    @{ Name = "Ensure 'Maximum password age' is set to '60 or fewer days, but not 0'"; Command = { ((Get-ADDefaultDomainPasswordPolicy -Server $DomainController).MaxPasswordAge.Days -le 60) -and ((Get-ADDefaultDomainPasswordPolicy -Server $DomainController).MaxPasswordAge.Days -gt 0) }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/maximum-password-age"; Type = "CIS" },
-    @{ Name = "Ensure 'Minimum password age' is set to '1 or more day(s)'"; Command = { (Get-ADDefaultDomainPasswordPolicy -Server $DomainController).MinPasswordAge.Days -ge 1 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/minimum-password-age"; Type = "CIS" },
-    @{ Name = "Ensure 'Enable computer and user accounts to be trusted for delegation' is set to 'No One'"; Command = { (Get-ADDefaultDomainPasswordPolicy -Server $DomainController).UserAccountControl -band 0x80000 -eq 0 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/enable-computer-and-user-accounts-to-be-trusted-for-delegation"; Type = "CIS" },
+    @{ Name = "Ensure 'Account lockout duration' is set to '15 or more minute(s)'"; Command = { $DefaultPasswordPolicy.LockoutDuration.TotalMinutes -ge 15 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/account-lockout-duration"; Type = "CIS" },
+    @{ Name = "Ensure 'Account lockout threshold' is set to '10 or fewer invalid logon attempt(s)'"; Command = { $DefaultPasswordPolicy.LockoutThreshold -le 10 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/account-lockout-threshold"; Type = "CIS" },
+    @{ Name = "Ensure 'Password minimum length' is set to '14 or more character(s)'"; Command = { $DefaultPasswordPolicy.MinPasswordLength -ge 14 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/password-minimum-length"; Type = "CIS" },
+    @{ Name = "Ensure 'Password history size' is set to '24 or more password(s)'"; Command = { $DefaultPasswordPolicy.PasswordHistorySize -ge 24 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/enforce-password-history"; Type = "CIS" },
+    @{ Name = "Ensure 'Maximum password age' is set to '60 or fewer days, but not 0'"; Command = { ($DefaultPasswordPolicy.MaxPasswordAge.Days -le 60) -and ($DefaultPasswordPolicy.MaxPasswordAge.Days -gt 0) }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/maximum-password-age"; Type = "CIS" },
+    @{ Name = "Ensure 'Minimum password age' is set to '1 or more day(s)'"; Command = { $DefaultPasswordPolicy.MinPasswordAge.Days -ge 1 }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/minimum-password-age"; Type = "CIS" },
+    @{ Name = "Ensure 'Enable computer and user accounts to be trusted for delegation' is set to 'No One'"; Command = {
+        $TrustedAccounts = @(Get-ADObject -Filter { (TrustedForDelegation -eq $true) -or (msDS-AllowedToDelegateTo -like '*') } -Server $DomainController -ErrorAction Stop)
+        $TrustedAccounts.Count -eq 0
+    }; Link = "https://docs.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/enable-computer-and-user-accounts-to-be-trusted-for-delegation"; Type = "CIS" },
     @{ Name = "Ensure 'User Rights Assignment: Access this computer from the network' is set to 'Administrators, Authenticated Users'"; Command = {
         try {
-            $value = (Get-GPRegistryValue -Name 'Default Domain Controllers Policy' -Key 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -ValueName 'NullSessionShares').Value
-            return $value -eq ""
+            $value = (Get-GPRegistryValue -Name 'Default Domain Controllers Policy' -Key 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -ValueName 'NullSessionShares' -ErrorAction Stop).Value
+            return [string]::IsNullOrEmpty($value)
         } catch {
             return $false
         }
@@ -58,7 +77,10 @@ $CISBenchmarks = @(
 
 # Define the NIST controls to check
 $NISTControls = @(
-    @{ Name = "Ensure 'Audit Log Retention' is set to '365 or more days'"; Command = { (Get-EventLog -LogName 'Security' -Newest 1 | Select-Object RetentionDays -ExpandProperty RetentionDays -eq 365) }; Link = "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-53r5.pdf"; Type = "NIST" },
+    @{ Name = "Ensure 'Audit Log Retention' is configured to not overwrite events (retain as needed)"; Command = {
+        $RetentionValue = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Security' -Name 'Retention' -ErrorAction Stop).Retention
+        $RetentionValue -eq 0
+    }; Link = "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-53r5.pdf"; Type = "NIST" },
     @{ Name = "Ensure 'Windows Firewall: Domain Profile' is set to 'On'"; Command = { (Get-NetFirewallProfile -Profile Domain).Enabled -eq 'True' }; Link = "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-53r5.pdf"; Type = "NIST" },
     @{ Name = "Ensure 'Audit: Audit the access of global system objects' is set to 'Disabled'"; Command = { (Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Lsa').AuditBaseObjects -eq 0 }; Link = "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-53r5.pdf"; Type = "NIST" },
     @{ Name = "Ensure 'Audit: Shut down system immediately if unable to log security audits' is set to 'Disabled'"; Command = { (Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Lsa').CrashOnAuditFail -eq 0 }; Link = "https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-53r5.pdf"; Type = "NIST" }
@@ -77,7 +99,10 @@ $GDPRControls = @(
 
 # Define HIPAA controls to check
 $HIPAAControls = @(
-    @{ Name = "Ensure 'Audit Controls' are in place"; Command = { (Get-EventLog -LogName 'Security' -Newest 1 | Select-Object EventID).EventID -eq 1102 }; Link = "https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html"; Type = "HIPAA" },
+    @{ Name = "Ensure 'Audit Controls' are in place"; Command = {
+        $AuditLogonPolicy = auditpol /get /subcategory:"Logon" /r | ConvertFrom-Csv
+        $AuditLogonPolicy.'Inclusion Setting' -match 'Success'
+    }; Link = "https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html"; Type = "HIPAA" },
     @{ Name = "Ensure 'Access Controls' are enforced"; Command = { (Get-ADUser -Filter {AdminCount -eq 1}).Count -le 5 }; Link = "https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html"; Type = "HIPAA" }
 )
 
@@ -93,38 +118,55 @@ $GDPRTotalCount = $GDPRControls.Count
 $HIPAACompliantCount = 0
 $HIPAATotalCount = $HIPAAControls.Count
 
+function Get-CompliancePercentage {
+    param([int]$Compliant, [int]$Total)
+    if ($Total -le 0) { return 0 }
+    return [math]::Round(($Compliant / $Total) * 100, 2)
+}
+
+# Combined list of all checks, reused both for compliance counting and for rendering the report table below
+$AllChecks = @($CISBenchmarks) + @($NISTControls) + @($SOXControls) + @($GDPRControls) + @($HIPAAControls)
+$CheckResults = @()
+
 # Check each CIS benchmark, NIST control, SOX control, GDPR control, and HIPAA control and count compliance
-foreach ($Benchmark in $CISBenchmarks + $NISTControls + $SOXControls + $GDPRControls + $HIPAAControls) {
+foreach ($Benchmark in $AllChecks) {
     $Name = $Benchmark.Name
     $Link = $Benchmark.Link
     $Type = $Benchmark.Type
     try {
         $Result = & $Benchmark.Command
-        if ($Result) {
-            switch ($Type) {
-                "CIS" { $CISCompliantCount++ }
-                "NIST" { $NISTCompliantCount++ }
-                "SOX" { $SOXCompliantCount++ }
-                "GDPR" { $GDPRCompliantCount++ }
-                "HIPAA" { $HIPAACompliantCount++ }
-            }
-        }
     } catch {
-        # If there's an error, consider it non-compliant
+        Write-Warning "Check '$Name' ($Type) failed to execute: $_"
+        $Result = $false
+    }
+    if ($Result) {
+        switch ($Type) {
+            "CIS" { $CISCompliantCount++ }
+            "NIST" { $NISTCompliantCount++ }
+            "SOX" { $SOXCompliantCount++ }
+            "GDPR" { $GDPRCompliantCount++ }
+            "HIPAA" { $HIPAACompliantCount++ }
+        }
+    }
+    $CheckResults += [PSCustomObject]@{
+        Name   = $Name
+        Link   = $Link
+        Type   = $Type
+        Result = [bool]$Result
     }
 }
 
 # Calculate compliance percentages
-$CISCompliancePercentage = [math]::Round(($CISCompliantCount / $CISTotalCount) * 100, 2)
-$NISTCompliancePercentage = [math]::Round(($NISTCompliantCount / $NISTTotalCount) * 100, 2)
-$SOXCompliancePercentage = [math]::Round(($SOXCompliantCount / $SOXTotalCount) * 100, 2)
-$GDPRCompliancePercentage = [math]::Round(($GDPRCompliantCount / $GDPRTotalCount) * 100, 2)
-$HIPAACompliancePercentage = [math]::Round(($HIPAACompliantCount / $HIPAATotalCount) * 100, 2)
+$CISCompliancePercentage = Get-CompliancePercentage -Compliant $CISCompliantCount -Total $CISTotalCount
+$NISTCompliancePercentage = Get-CompliancePercentage -Compliant $NISTCompliantCount -Total $NISTTotalCount
+$SOXCompliancePercentage = Get-CompliancePercentage -Compliant $SOXCompliantCount -Total $SOXTotalCount
+$GDPRCompliancePercentage = Get-CompliancePercentage -Compliant $GDPRCompliantCount -Total $GDPRTotalCount
+$HIPAACompliancePercentage = Get-CompliancePercentage -Compliant $HIPAACompliantCount -Total $HIPAATotalCount
 
 # Calculate overall risk percentage based on compliance
 $TotalChecks = $CISTotalCount + $NISTTotalCount + $SOXTotalCount + $GDPRTotalCount + $HIPAATotalCount
 $TotalCompliant = $CISCompliantCount + $NISTCompliantCount + $SOXCompliantCount + $GDPRCompliantCount + $HIPAACompliantCount
-$OverallCompliancePercentage = [math]::Round(($TotalCompliant / $TotalChecks) * 100, 2)
+$OverallCompliancePercentage = Get-CompliancePercentage -Compliant $TotalCompliant -Total $TotalChecks
 $RiskPercentage = 100 - $OverallCompliancePercentage
 
 # Determine risk level
@@ -331,7 +373,7 @@ $Report = @"
 
         <img src="file:///$LogoPath" alt="Logo" />
 		<br><br>
-        <h1>Active Directory Compliance Report for $domain</h1>
+        <h1>Active Directory Compliance Report for $SafeDomain</h1>
     </div>
     <div class='chart-container'>
         <div>
@@ -394,84 +436,13 @@ $Report = @"
         </tr>
 "@
 
-# Check each CIS benchmark and append the result to the report
-foreach ($Benchmark in $CISBenchmarks) {
-    $Name = $Benchmark.Name
-    $Link = $Benchmark.Link
-    $Type = $Benchmark.Type
-    try {
-        $Result = & $Benchmark.Command
-        $ResultText = if ($Result) { "Compliant" } else { "Non-Compliant" }
-        $ResultClass = if ($Result) { "compliant" } else { "non-compliant" }
-    } catch {
-        $ResultText = "Non-Compliant"
-        $ResultClass = "non-compliant"
-    }
-    $Report += "<tr><td>$Type</td><td>$Name</td><td class='$ResultClass'>$ResultText</td></tr>"
-}
-
-# Check each NIST control and append the result to the report
-foreach ($Control in $NISTControls) {
-    $Name = $Control.Name
-    $Link = $Control.Link
-    $Type = $Control.Type
-    try {
-        $Result = & $Control.Command
-        $ResultText = if ($Result) { "Compliant" } else { "Non-Compliant" }
-        $ResultClass = if ($Result) { "compliant" } else { "non-compliant" }
-    } catch {
-        $ResultText = "Non-Compliant"
-        $ResultClass = "non-compliant"
-    }
-    $Report += "<tr><td>$Type</td><td>$Name</td><td class='$ResultClass'>$ResultText</td></tr>"
-}
-
-# Check each SOX control and append the result to the report
-foreach ($Control in $SOXControls) {
-    $Name = $Control.Name
-    $Link = $Control.Link
-    $Type = $Control.Type
-    try {
-        $Result = & $Control.Command
-        $ResultText = if ($Result) { "Compliant" } else { "Non-Compliant" }
-        $ResultClass = if ($Result) { "compliant" } else { "non-compliant" }
-    } catch {
-        $ResultText = "Non-Compliant"
-        $ResultClass = "non-compliant"
-    }
-    $Report += "<tr><td>$Type</td><td>$Name</td><td class='$ResultClass'>$ResultText</td></tr>"
-}
-
-# Check each GDPR control and append the result to the report
-foreach ($Control in $GDPRControls) {
-    $Name = $Control.Name
-    $Link = $Control.Link
-    $Type = $Control.Type
-    try {
-        $Result = & $Control.Command
-        $ResultText = if ($Result) { "Compliant" } else { "Non-Compliant" }
-        $ResultClass = if ($Result) { "compliant" } else { "non-compliant" }
-    } catch {
-        $ResultText = "Non-Compliant"
-        $ResultClass = "non-compliant"
-    }
-    $Report += "<tr><td>$Type</td><td>$Name</td><td class='$ResultClass'>$ResultText</td></tr>"
-}
-
-# Check each HIPAA control and append the result to the report
-foreach ($Control in $HIPAAControls) {
-    $Name = $Control.Name
-    $Link = $Control.Link
-    $Type = $Control.Type
-    try {
-        $Result = & $Control.Command
-        $ResultText = if ($Result) { "Compliant" } else { "Non-Compliant" }
-        $ResultClass = if ($Result) { "compliant" } else { "non-compliant" }
-    } catch {
-        $ResultText = "Non-Compliant"
-        $ResultClass = "non-compliant"
-    }
-    $Report += "<tr><td>$Type</td><td>$Name</td><td class='$ResultClass'>$ResultText</td></tr>"
+# Append the result of each benchmark/control (already evaluated above) to the report
+foreach ($Check in $CheckResults) {
+    $ResultText = if ($Check.Result) { "Compliant" } else { "Non-Compliant" }
+    $ResultClass = if ($Check.Result) { "compliant" } else { "non-compliant" }
+    $SafeName = ConvertTo-SafeHtml $Check.Name
+    $SafeLink = ConvertTo-SafeHtml $Check.Link
+    $Report += "<tr><td>$($Check.Type)</td><td><a href='$SafeLink' target='_blank'>$SafeName</a></td><td class='$ResultClass'>$ResultText</td></tr>"
 }
 
 # Finalize the HTML report
@@ -481,9 +452,8 @@ $Report += @"
 "@
 
 
-# Get password complexity setting
-$PasswordPolicy = Get-ADDefaultDomainPasswordPolicy -Server $DomainController
-$PasswordComplexity = $PasswordPolicy.ComplexityEnabled
+# Get password complexity setting (reuse the policy already fetched above)
+$PasswordComplexity = $DefaultPasswordPolicy.ComplexityEnabled
 
 # Get all users
 $AllUsers = Get-ADUser -Filter * -Properties LastLogon, PasswordLastSet
@@ -523,24 +493,32 @@ $Report += @"
 # Get all domain controllers
 $DomainControllers = Get-ADDomainController -Filter *
 
+# Build a lookup of the latest LastLogon (non-replicated attribute) per user by querying
+# each DC once for all users, instead of querying each user against every DC individually.
+$LatestLogonByUser = @{}
+foreach ($DC in $DomainControllers) {
+    try {
+        $DCUsers = Get-ADUser -Filter * -Server $DC.Name -Properties LastLogon -ErrorAction Stop
+    } catch {
+        Write-Warning "Failed to query domain controller '$($DC.Name)' for last logon data: $_"
+        continue
+    }
+    foreach ($DCUser in $DCUsers) {
+        if ($DCUser.LastLogon -and $DCUser.LastLogon -gt 0) {
+            $LogonDate = [DateTime]::FromFileTime($DCUser.LastLogon)
+            if (-not $LatestLogonByUser.ContainsKey($DCUser.SamAccountName) -or $LogonDate -gt $LatestLogonByUser[$DCUser.SamAccountName]) {
+                $LatestLogonByUser[$DCUser.SamAccountName] = $LogonDate
+            }
+        }
+    }
+}
+
 foreach ($User in $AllUsers) {
-    $LatestLogon = $null
     $PasswordExpires = "N/A"  # Default value if no expiration is available
     $PasswordExpiryStatus = ""
 
-    foreach ($DC in $DomainControllers) {
-        # Get last logon for the user on each domain controller
-        $UserLogon = Get-ADUser -Identity $User.SamAccountName -Server $DC.Name -Properties LastLogon
-
-        # Compare and pick the latest logon time
-        $LogonDate = [DateTime]::FromFileTime($UserLogon.LastLogon)
-        if (-not $LatestLogon -or $LogonDate -gt $LatestLogon) {
-            $LatestLogon = $LogonDate
-        }
-    }
-
     # If no logon found, display "Never logged in"
-    $LastLogonDate = if ($LatestLogon) { $LatestLogon } else { "Never logged in" }
+    $LastLogonDate = if ($LatestLogonByUser.ContainsKey($User.SamAccountName)) { $LatestLogonByUser[$User.SamAccountName] } else { "Never logged in" }
 
     # Check for built-in or LDAP users
     if ($User.SamAccountName -match "^[\w\s]*\$") {
@@ -552,7 +530,7 @@ foreach ($User in $AllUsers) {
 
     # Calculate Password Expiry Date
     if ($User.PasswordLastSet) {
-        $MaxPasswordAge = (Get-ADDefaultDomainPasswordPolicy -Server $DomainController).MaxPasswordAge
+        $MaxPasswordAge = $DefaultPasswordPolicy.MaxPasswordAge
         $PasswordExpiryDate = $User.PasswordLastSet.AddDays($MaxPasswordAge.Days)
         
         # Display the expiration date, and check if it's expired
@@ -568,9 +546,10 @@ foreach ($User in $AllUsers) {
     }
 
     # Append user, last logon date, and password expiry to report
+    $SafeSamAccountName = ConvertTo-SafeHtml $User.SamAccountName
     $Report += @"
             <tr>
-                <td>$($User.SamAccountName)</td>
+                <td>$SafeSamAccountName</td>
                 <td>$LastLogonDate</td>
                 <td>$PasswordExpires</td>
             </tr>
@@ -582,7 +561,7 @@ $Report += @"
         </table>
     
     <div class="footer">
-        Powered By <a href="https://$signature_url" target="_blank">$signature_url</a>
+        Powered By <a href="https://$SafeSignatureUrl" target="_blank">$SafeSignatureUrl</a>
     </div>
 </body>
 </html>

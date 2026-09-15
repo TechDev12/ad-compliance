@@ -3,6 +3,6 @@ This script will generate a HTML report that will check your AD for benchmark co
 For all the metrics to work properly ensure the script is executed with Administrative privileges
 
 **Usage example:
-.\ad-compilance.ps1 -dchostname "your domain controller hostname" -domain "yourdomain.com" -signature "signature inside the html report"**
+.\ad-compliance.ps1 -dchostname "your domain controller hostname" -domain "yourdomain.com" -signature_url "signature inside the html report"**
 
 You can modify the script to include your own logo to be added into the report.
