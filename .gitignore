@@ -1,0 +1,10 @@
+# Generated report output
+Report.html
+
+# Optional local branding asset
+Logo.jpg
+
+# Windows / editor artifacts
+Thumbs.db
+*.log
+.vscode/

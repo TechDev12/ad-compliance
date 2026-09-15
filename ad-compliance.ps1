@@ -1,3 +1,32 @@
+<#
+.SYNOPSIS
+    Audits Active Directory against CIS, NIST, SOX, GDPR & HIPAA baseline controls and generates an interactive HTML compliance report.
+
+.DESCRIPTION
+    This script queries Active Directory and the local Group Policy / registry configuration of the target
+    domain controller to evaluate a set of security baseline controls across five compliance frameworks
+    (CIS, NIST, SOX, GDPR, HIPAA). It also enumerates all domain users, aggregating last-logon information
+    across every domain controller, and reports password-expiry status per user.
+
+    The output is a single, self-contained HTML file (Report.html) featuring Google Charts compliance
+    gauges, an overall risk score, a filterable findings table, and a full AD user report.
+
+.PARAMETER dchostname
+    Hostname of the domain controller to query (e.g. DC01.yourdomain.com).
+
+.PARAMETER domain
+    Domain name to display in the report title (e.g. yourdomain.com).
+
+.PARAMETER signature_url
+    Text/URL rendered in the report footer (e.g. your company name or site).
+
+.EXAMPLE
+    .\ad-compliance.ps1 -dchostname "DC01.yourdomain.com" -domain "yourdomain.com" -signature_url "yourcompany.com"
+
+.NOTES
+    Author  : Maroun Haykal
+    Requires: ActiveDirectory and GroupPolicy PowerShell modules, and Administrative privileges on the domain.
+#>
 param (
     [Parameter(Mandatory = $true)]
     [string]$dchostname,
@@ -9,10 +38,6 @@ param (
     [string]$signature_url
 )
 
-#
-# Created by Maroun Haykal 
-# This script will generate a HTML report that will check your Active Directory for baseline benchmark controls for CIS, NIST, SOX, GDPR & HIPAA, As well for AD user enumeration with user expiry and complex password. 
-#
 # Import required modules
 Import-Module ActiveDirectory
 Import-Module GroupPolicy
